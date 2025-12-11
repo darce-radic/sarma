@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sarma-postgres
+    environment:
+      POSTGRES_DB: sarma
+      POSTGRES_USER: sarma_user
+      POSTGRES_PASSWORD: sarma_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sarma_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: sarma-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sarma-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://sarma_user:sarma_password@postgres:5432/sarma
+      REDIS_URL: redis://redis:6379
+      COLES_WOOLWORTHS_MCP_URL: http://mcp-server:3001
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mcp-server:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # React PWA Frontend
+  frontend:
+    build:
+      context: ./pwa
+      dockerfile: Dockerfile
+    container_name: sarma-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./pwa:/app
+      - /app/node_modules
+    command: npm run dev -- --host
+
+  # Coles/Woolworths MCP Server
+  mcp-server:
+    build:
+      context: ../coles-woolworths-mcp
+      dockerfile: Dockerfile
+    container_name: sarma-mcp-server
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
